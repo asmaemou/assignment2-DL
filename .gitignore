@@ -1,1 +1,6 @@
 imagenet2010/
+cifar10_env is the environment name
+tiny-imagenet-200/
+data_imagenet2010/
+data_subset_100x500/
+data_subset_100x500_F/
