@@ -1,23 +1,8 @@
 """
-prepare_tiny_imagenet_subset_with_manifest.py
----------------------------------------------
-Same as prepare_tiny_imagenet_subset.py, but ALSO writes a CSV manifest per split
-with one row per image, including:
-  split, relative_path, class_name, class_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2
-
-Bounding boxes are read from each class's "<wnid>_boxes.txt" in the Tiny-ImageNet train source.
-If an image has multiple boxes listed, we keep the FIRST one encountered.
-If an image has no box row, bbox columns are left empty.
-
-Usage:
-  python prepare_tiny_imagenet_subset_with_manifest.py
-  # or explicitly
-  python prepare_tiny_imagenet_subset_with_manifest.py ^
-    --src "C:\...\tiny-imagenet-200\tiny-imagenet-200\train" ^
-    --dst "C:\...\data_subset_100x500" ^
-    [--random-classes] [--seed 42]
+To summarize, this code prepares a subset of the Tiny ImageNet dataset by selecting 100 classes, taking 500 images per class, and splitting the dataset into training, validation, and test sets.
+It also performs image preprocessing (resize, crop) and creates a manifest CSV for each split with information about the images and bounding boxes (if available).
+Finally, it calculates normalization statistics and saves them in a JSON file for use in training models like AlexNet
 """
-
 import argparse
 import csv
 import json
@@ -30,32 +15,38 @@ import numpy as np
 from PIL import Image
 
 # ---- Constants ----
-PER_CLASS = 500
-TRAIN_PER_CLASS = 300
-VAL_PER_CLASS = 100
-TEST_PER_CLASS = 100
+# I am setting the number of images per class and the split ratio
+PER_CLASS = 500  # Total images per class (500)
+TRAIN_PER_CLASS = 300  # Training set size per class (300)
+VAL_PER_CLASS = 100  # Validation set size per class (100)
+TEST_PER_CLASS = 100  # Test set size per class (100)
 assert TRAIN_PER_CLASS + VAL_PER_CLASS + TEST_PER_CLASS == PER_CLASS, "Split must sum to 500/class."
 
-TARGET_SHORTER_SIDE = 256
-CROP_SIZE = 224
+TARGET_SHORTER_SIDE = 256  # Target shorter side of the image
+CROP_SIZE = 224  # Crop size (224x224 for AlexNet input)
 
+# ---- Argument Parsing ----
 def parse_args():
+    # Parsing arguments from command line to configure paths and options
     parser = argparse.ArgumentParser(description="Build 100x500 Tiny-ImageNet subset + CSV manifests.")
     parser.add_argument("--src", type=Path, required=False,
                         default=Path(r"C:\Users\asmae\Documents\WSU\Deep Learning\assignment2-DL\ques1\tiny-imagenet-200\tiny-imagenet-200\train"),
                         help="Path to Tiny-ImageNet-200 train folder (contains one subfolder per class).")
     parser.add_argument("--dst", type=Path, required=False,
-                        default=Path(r"C:\Users\asmae\Documents\WSU\Deep Learning\assignment2-DL\ques1\data_subset_100x500"),
+                        default=Path(r"C:\Users\asmae\Documents\WSU\Deep Learning\assignment2-DL\ques1\data_subset_tiny_imagenet"),
                         help="Destination root where {train,val,test}/<class> will be created.")
     parser.add_argument("--random-classes", action="store_true",
                         help="If set, pick 100 classes at random instead of the first 100 sorted.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
     return parser.parse_args()
 
+# ---- Directory and Class Handling ----
 def list_class_dirs(src: Path) -> List[Path]:
+    # List all the class directories in the source path (Tiny ImageNet)
     return sorted([p for p in src.iterdir() if p.is_dir()])
 
 def pick_classes(class_dirs: List[Path], random_pick: bool, seed: int) -> List[Path]:
+    # Pick 100 classes based on random choice or the first 100 sorted (choose random in this case)
     if not random_pick:
         return class_dirs[:100]
     rs = random.Random(seed)
@@ -63,12 +54,16 @@ def pick_classes(class_dirs: List[Path], random_pick: bool, seed: int) -> List[P
     rs.shuffle(picked)
     return picked[:100]
 
+# ---- Image Collection ----
 def collect_images_for_class(class_dir: Path) -> List[Path]:
+    # Collect exactly 500 images for each class
     images_dir = class_dir / "images"
     imgs = sorted([p for p in images_dir.glob("*") if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".jpeg".upper()}])
     if len(imgs) < PER_CLASS:
         raise ValueError(f"{class_dir.name}: expected >= {PER_CLASS} images, found {len(imgs)}")
     return imgs[:PER_CLASS]
+
+# ---- Bounding Box Handling assuming there is only one bounding box per image----
 
 def read_bbox_map_if_any(class_dir: Path) -> Dict[str, Tuple[str, str, str, str]]:
     wnid = class_dir.name
@@ -79,14 +74,14 @@ def read_bbox_map_if_any(class_dir: Path) -> Dict[str, Tuple[str, str, str, str]
     with open(bbox_file, "r") as f:
         for line in f:
             parts = line.strip().split()
-            if len(parts) != 5:
-                parts = line.strip().split("\t")
-            if len(parts) >= 5:
-                fname, x1, y1, x2, y2 = parts[:5]
-                mapping.setdefault(fname, (x1, y1, x2, y2))
+            if len(parts) == 5:  # Ensure we have the correct number of parts (filename + 4 bbox values)
+                fname, x1, y1, x2, y2 = parts
+                mapping[fname] = (x1, y1, x2, y2)  # Map image filename directly to bounding box
     return mapping
 
+# ---- Dataset Splitting ----
 def split_indices(n: int, train_n: int, val_n: int, test_n: int, seed: int):
+    # Split dataset into train, validation, and test based on specified sizes
     idxs = list(range(n))
     rng = random.Random(seed)
     rng.shuffle(idxs)
@@ -95,12 +90,16 @@ def split_indices(n: int, train_n: int, val_n: int, test_n: int, seed: int):
     test_idx = idxs[train_n + val_n:train_n + val_n + test_n]
     return train_idx, val_idx, test_idx
 
+# ---- Directory Creation ----
 def ensure_dir(p: Path):
+    # Ensure that the directory exists
     p.mkdir(parents=True, exist_ok=True)
 
+# ---- Copy and Record Images ----
 def copy_and_record(imgs: List[Path], indices: List[int], class_name: str, split: str,
                     dst_root: Path, class_id: int, bbox_map: Dict[str, Tuple[str, str, str, str]],
                     rows_out: List[List[str]]):
+    # Copy images to appropriate splits (train, val, test) and record their details in the manifest
     for i in indices:
         src = imgs[i]
         dst = dst_root / split / class_name / src.name
@@ -110,7 +109,9 @@ def copy_and_record(imgs: List[Path], indices: List[int], class_name: str, split
         rel_path = str(dst.relative_to(dst_root)).replace("\\", "/")
         rows_out.append([split, rel_path, class_name, str(class_id), *bbox])
 
+# ---- Image Preprocessing (Resizing and Cropping) ----
 def resize_shorter_side(img: Image.Image, target: int) -> Image.Image:
+    # Resize image so the shorter side is equal to the target value
     w, h = img.size
     if min(w, h) == target:
         return img
@@ -123,6 +124,7 @@ def resize_shorter_side(img: Image.Image, target: int) -> Image.Image:
     return img.resize((new_w, new_h), Image.BILINEAR)
 
 def center_crop(img: Image.Image, size: int) -> Image.Image:
+    # Crop the center of the image to the desired size
     w, h = img.size
     left = (w - size) // 2
     upper = (h - size) // 2
@@ -130,9 +132,9 @@ def center_crop(img: Image.Image, size: int) -> Image.Image:
     lower = upper + size
     return img.crop((left, upper, right, lower))
 
+# ---- Channel Statistics Calculation (for Data Normalization) ----
 def compute_channel_stats_on_training(dst_root: Path, class_to_id: Dict[str, int]):
-    import numpy as np
-    from PIL import Image
+    # Compute mean and std of the images for channel normalization (as done in AlexNet)
     sum_rgb = np.zeros(3, dtype=np.float64)
     sumsq_rgb = np.zeros(3, dtype=np.float64)
     count = 0
@@ -155,7 +157,9 @@ def compute_channel_stats_on_training(dst_root: Path, class_to_id: Dict[str, int
         json.dump(stats, f, indent=2)
     return stats
 
+# ---- Manifest Writing ----
 def write_label_files(dst_root: Path, picked_classes: List[Path]):
+    # Write the class labels to files
     classes = [c.name for c in picked_classes]
     with open(dst_root / "classes.txt", "w") as f:
         for cname in classes:
@@ -166,7 +170,7 @@ def write_label_files(dst_root: Path, picked_classes: List[Path]):
     return labels
 
 def write_manifests(dst_root: Path, rows_train, rows_val, rows_test):
-    import csv
+    # Write the manifest CSV files (train, val, test)
     header = ["split", "relative_path", "class_name", "class_id", "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2"]
     for split, rows in [("train", rows_train), ("val", rows_val), ("test", rows_test)]:
         out_csv = dst_root / f"{split}_manifest.csv"
@@ -175,38 +179,50 @@ def write_manifests(dst_root: Path, rows_train, rows_val, rows_test):
             w.writerow(header)
             w.writerows(rows)
 
+# ---- Main Function ----
 def main():
-    args = parse_args()
-    random.seed(args.seed)
+    # Main function to execute the dataset preparation process
+    args = parse_args()  # Parse arguments for paths and options
+    random.seed(args.seed)  # Set the random seed for reproducibility
 
+    # Ensure source path exists
     if not args.src.exists():
         raise SystemExit(f"Source path not found: {args.src}")
-    ensure_dir(args.dst)
+    
+    ensure_dir(args.dst)  # Create destination directories
 
-    class_dirs = list_class_dirs(args.src)
+    class_dirs = list_class_dirs(args.src)  # List all class directories
     if len(class_dirs) < 100:
         raise SystemExit(f"Found {len(class_dirs)} classes; expected at least 100.")
+    
+    # Pick 100 classes from the dataset (random or first 100)
     picked = pick_classes(class_dirs, args.random_classes, args.seed)
 
+    # Write label files and manifest headers
     labels_map = write_label_files(args.dst, picked)
 
     rows_train, rows_val, rows_test = [], [], []
 
+    # Process each class
     for class_dir in picked:
-        imgs = collect_images_for_class(class_dir)
-        bbox_map = read_bbox_map_if_any(class_dir)
+        imgs = collect_images_for_class(class_dir)  # Collect images for the class
+        bbox_map = read_bbox_map_if_any(class_dir)  # Read bounding box info
         cname = class_dir.name
         cid = labels_map[cname]
         train_idx, val_idx, test_idx = split_indices(len(imgs), TRAIN_PER_CLASS, VAL_PER_CLASS, TEST_PER_CLASS, args.seed)
 
+        # Copy images and record to corresponding split (train/val/test)
         copy_and_record(imgs, train_idx, cname, "train", args.dst, cid, bbox_map, rows_train)
-        copy_and_record(imgs, val_idx,   cname, "val",   args.dst, cid, bbox_map, rows_val)
-        copy_and_record(imgs, test_idx,  cname, "test",  args.dst, cid, bbox_map, rows_test)
+        copy_and_record(imgs, val_idx, cname, "val", args.dst, cid, bbox_map, rows_val)
+        copy_and_record(imgs, test_idx, cname, "test", args.dst, cid, bbox_map, rows_test)
 
+    # Write final manifests (CSV files)
     write_manifests(args.dst, rows_train, rows_val, rows_test)
 
+    # Compute channel statistics (mean, std)
     _ = compute_channel_stats_on_training(args.dst, labels_map)
 
+    # Print results
     print("Dataset has been created.")
     print(f"Classes: {len(picked)}  →  saved to: {args.dst}")
     print(f"Splits per class: train={TRAIN_PER_CLASS}, val={VAL_PER_CLASS}, test={TEST_PER_CLASS}")
