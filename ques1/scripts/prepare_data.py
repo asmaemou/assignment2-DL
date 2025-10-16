@@ -10,7 +10,6 @@ import random
 import shutil
 from pathlib import Path
 from typing import List, Tuple, Dict
-
 import numpy as np
 from PIL import Image
 
@@ -20,7 +19,7 @@ PER_CLASS = 500  # Total images per class (500)
 TRAIN_PER_CLASS = 300  # Training set size per class (300)
 VAL_PER_CLASS = 100  # Validation set size per class (100)
 TEST_PER_CLASS = 100  # Test set size per class (100)
-assert TRAIN_PER_CLASS + VAL_PER_CLASS + TEST_PER_CLASS == PER_CLASS, "Split must sum to 500/class."
+assert TRAIN_PER_CLASS + VAL_PER_CLASS + TEST_PER_CLASS == PER_CLASS, "Split sizes must sum to PER_CLASS"
 
 TARGET_SHORTER_SIDE = 256  # Target shorter side of the image
 CROP_SIZE = 224  # Crop size (224x224 for AlexNet input)
@@ -42,11 +41,14 @@ def parse_args():
 
 # ---- Directory and Class Handling ----
 def list_class_dirs(src: Path) -> List[Path]:
-    # List all the class directories in the source path (Tiny ImageNet)
+    # This function lists all the class directories in the source path Tiny ImageNet.
+    # Tiny ImageNet has 200 classes, and this function retrieves all class directories,sorting them alphabetically for consistent class selection.
     return sorted([p for p in src.iterdir() if p.is_dir()])
 
+# ---- This function randomly selects 100 classes from the list of class directories. If 'random_pick' is False, it selects the first 100 classes in sorted order. If 'random_pick' is True, it shuffles the class list and selects 100 classes randomly. 
+# And the random seed ensures reproducibility.
 def pick_classes(class_dirs: List[Path], random_pick: bool, seed: int) -> List[Path]:
-    # Pick 100 classes based on random choice or the first 100 sorted (choose random in this case)
+    # Pick 100 classes based on random choice or the first 100 sorted I choose random. 
     if not random_pick:
         return class_dirs[:100]
     rs = random.Random(seed)
@@ -55,6 +57,10 @@ def pick_classes(class_dirs: List[Path], random_pick: bool, seed: int) -> List[P
     return picked[:100]
 
 # ---- Image Collection ----
+# This function collects exactly 500 images for each class from the 'images' subdirectory of the class directory.
+# The variable 'PER_CLASS' is defined as 500, and the function ensures there are at least 500 images.
+# If there are fewer than 500 images, it raises an error.
+# The images are sorted to ensure consistent ordering, and only the first 500 images are returned.
 def collect_images_for_class(class_dir: Path) -> List[Path]:
     # Collect exactly 500 images for each class
     images_dir = class_dir / "images"
@@ -64,19 +70,20 @@ def collect_images_for_class(class_dir: Path) -> List[Path]:
     return imgs[:PER_CLASS]
 
 # ---- Bounding Box Handling assuming there is only one bounding box per image----
-
+# The function read_bbox_map_if_any reads the bounding box annotations for each image in a class. Each class has a corresponding '<wnid>_boxes.txt' file that contains bounding box data.
 def read_bbox_map_if_any(class_dir: Path) -> Dict[str, Tuple[str, str, str, str]]:
     wnid = class_dir.name
     bbox_file = class_dir / f"{wnid}_boxes.txt"
     mapping = {}
+    # Here i am checking if bounding box file exists, if not I return empty mapping
     if not bbox_file.exists():
         return mapping
     with open(bbox_file, "r") as f:
         for line in f:
             parts = line.strip().split()
-            if len(parts) == 5:  # Ensure we have the correct number of parts (filename + 4 bbox values)
+            if len(parts) == 5:  # I am making sure I have the correct number of parts which is 5 in total = 1 for the filename + 4 bbox values
                 fname, x1, y1, x2, y2 = parts
-                mapping[fname] = (x1, y1, x2, y2)  # Map image filename directly to bounding box
+                mapping[fname] = (x1, y1, x2, y2)  # Here I am mapping image filename directly to bounding box
     return mapping
 
 # ---- Dataset Splitting ----
